@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nudity Tagger</title>
+</head>
+<body>
+    <div id="NudityTaggerConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,emby-select">
+        <div data-role="content">
+            <div class="content-primary">
+                <form id="NudityTaggerConfigForm">
+                    <div class="folderAccess">
+                        <h2>Nudity Tagger Settings</h2>
+                        <p>Configure how the plugin tags content based on IMDB Parents Guide data.</p>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="EnablePlugin" type="checkbox" is="emby-checkbox" />
+                                <span>Enable Plugin</span>
+                            </label>
+                            <div class="fieldDescription">Enable or disable the nudity tagging functionality.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="MinimumSeverityToTag">Minimum Severity to Tag</label>
+                            <select id="MinimumSeverityToTag" is="emby-select" class="emby-select-withcolor">
+                                <option value="None">None (tag everything)</option>
+                                <option value="Mild">Mild</option>
+                                <option value="Moderate">Moderate</option>
+                                <option value="Severe">Severe</option>
+                            </select>
+                            <div class="fieldDescription">Only tag items that meet or exceed this severity level.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="TagPrefix">Tag Prefix</label>
+                            <input id="TagPrefix" type="text" is="emby-input" />
+                            <div class="fieldDescription">Optional prefix for tags (e.g., "Content: " will create "Content: Brief Nudity").</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="CacheDurationHours">Cache Duration (hours)</label>
+                            <input id="CacheDurationHours" type="number" is="emby-input" min="1" max="8760" />
+                            <div class="fieldDescription">How long to cache IMDB results before re-fetching.</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="RequestDelayMs">Request Delay (ms)</label>
+                            <input id="RequestDelayMs" type="number" is="emby-input" min="500" max="10000" />
+                            <div class="fieldDescription">Delay between IMDB requests to avoid rate limiting.</div>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="SkipAlreadyTagged" type="checkbox" is="emby-checkbox" />
+                                <span>Skip Already Tagged Items</span>
+                            </label>
+                            <div class="fieldDescription">Skip items that already have nudity tags applied.</div>
+                        </div>
+
+                        <div>
+                            <button is="emby-button" type="submit" class="raised button-submit block">
+                                <span>Save</span>
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script type="text/javascript">
+            var NudityTaggerConfig = {
+                pluginUniqueId: 'a5b6c7d8-e9f0-1234-5678-9abcdef01234'
+            };
+
+            document.querySelector('#NudityTaggerConfigPage')
+                .addEventListener('pageshow', function() {
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(NudityTaggerConfig.pluginUniqueId).then(function(config) {
+                        document.querySelector('#EnablePlugin').checked = config.EnablePlugin;
+                        document.querySelector('#MinimumSeverityToTag').value = config.MinimumSeverityToTag;
+                        document.querySelector('#TagPrefix').value = config.TagPrefix;
+                        document.querySelector('#CacheDurationHours').value = config.CacheDurationHours;
+                        document.querySelector('#RequestDelayMs').value = config.RequestDelayMs;
+                        document.querySelector('#SkipAlreadyTagged').checked = config.SkipAlreadyTagged;
+                        Dashboard.hideLoadingMsg();
+                    });
+                });
+
+            document.querySelector('#NudityTaggerConfigForm')
+                .addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(NudityTaggerConfig.pluginUniqueId).then(function(config) {
+                        config.EnablePlugin = document.querySelector('#EnablePlugin').checked;
+                        config.MinimumSeverityToTag = document.querySelector('#MinimumSeverityToTag').value;
+                        config.TagPrefix = document.querySelector('#TagPrefix').value;
+                        config.CacheDurationHours = parseInt(document.querySelector('#CacheDurationHours').value, 10);
+                        config.RequestDelayMs = parseInt(document.querySelector('#RequestDelayMs').value, 10);
+                        config.SkipAlreadyTagged = document.querySelector('#SkipAlreadyTagged').checked;
+                        ApiClient.updatePluginConfiguration(NudityTaggerConfig.pluginUniqueId, config).then(function(result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
+                    });
+                    return false;
+                });
+        </script>
+    </div>
+</body>
+</html>
