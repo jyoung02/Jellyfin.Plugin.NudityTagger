@@ -57,6 +57,14 @@
                             <div class="fieldDescription">Skip items that already have nudity tags applied.</div>
                         </div>
 
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="SetTagline" type="checkbox" is="emby-checkbox" />
+                                <span>Set Tagline</span>
+                            </label>
+                            <div class="fieldDescription">Display content warnings prominently in the tagline (shows under title). Warning: This will overwrite existing taglines.</div>
+                        </div>
+
                         <div>
                             <button is="emby-button" type="submit" class="raised button-submit block">
                                 <span>Save</span>
@@ -82,6 +90,7 @@
                         document.querySelector('#CacheDurationHours').value = config.CacheDurationHours;
                         document.querySelector('#RequestDelayMs').value = config.RequestDelayMs;
                         document.querySelector('#SkipAlreadyTagged').checked = config.SkipAlreadyTagged;
+                        document.querySelector('#SetTagline').checked = config.SetTagline;
                         Dashboard.hideLoadingMsg();
                     });
                 });
@@ -97,6 +106,7 @@
                         config.CacheDurationHours = parseInt(document.querySelector('#CacheDurationHours').value, 10);
                         config.RequestDelayMs = parseInt(document.querySelector('#RequestDelayMs').value, 10);
                         config.SkipAlreadyTagged = document.querySelector('#SkipAlreadyTagged').checked;
+                        config.SetTagline = document.querySelector('#SetTagline').checked;
                         ApiClient.updatePluginConfiguration(NudityTaggerConfig.pluginUniqueId, config).then(function(result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
                         });

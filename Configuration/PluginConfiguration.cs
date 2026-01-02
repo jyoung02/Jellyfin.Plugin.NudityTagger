@@ -12,6 +12,7 @@ public class PluginConfiguration : BasePluginConfiguration
         CacheDurationHours = 168; // 1 week
         RequestDelayMs = 2000;
         SkipAlreadyTagged = true;
+        SetTagline = true;
     }
 
     /// <summary>
@@ -44,4 +45,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets a value indicating whether to skip items that already have nudity tags.
     /// </summary>
     public bool SkipAlreadyTagged { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to set the tagline with content warnings.
+    /// </summary>
+    public bool SetTagline { get; set; }
 }

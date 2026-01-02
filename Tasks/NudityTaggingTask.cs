@@ -108,7 +108,7 @@ public class NudityTaggingTask : IScheduledTask
                 var tags = DetermineTags(parentsGuide, config.MinimumSeverityToTag, config.TagPrefix);
                 if (tags.Count > 0)
                 {
-                    await ApplyTagsAsync(item, tags, config.TagPrefix, cancellationToken);
+                    await ApplyTagsAsync(item, tags, config.TagPrefix, config.SetTagline, cancellationToken);
                     tagged++;
                     processedImdbIds.Add(imdbId);
                 }
@@ -301,13 +301,21 @@ public class NudityTaggingTask : IScheduledTask
         return tags.Distinct().ToList();
     }
 
-    private async Task ApplyTagsAsync(BaseItem item, List<string> newTags, string prefix, CancellationToken ct)
+    private async Task ApplyTagsAsync(BaseItem item, List<string> newTags, string prefix, bool setTagline, CancellationToken ct)
     {
         var currentTags = item.Tags?.ToList() ?? new List<string>();
         var allNudityTags = NudityCategory.AllCategories.Select(c => prefix + c).Concat(NudityCategory.AllCategories).ToHashSet();
         currentTags.RemoveAll(t => allNudityTags.Contains(t));
         currentTags.AddRange(newTags);
         item.Tags = currentTags.Distinct().ToArray();
+
+        // Set tagline for prominent display (shows under title)
+        if (setTagline)
+        {
+            var contentWarning = "Content Warning: " + string.Join(", ", newTags.Select(t => t.Replace(prefix, "")));
+            item.Tagline = contentWarning;
+        }
+
         await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
         _logger.LogInformation("Applied tags {Tags} to {ItemName}", string.Join(", ", newTags), item.Name);
     }
