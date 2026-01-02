@@ -309,11 +309,25 @@ public class NudityTaggingTask : IScheduledTask
         currentTags.AddRange(newTags);
         item.Tags = currentTags.Distinct().ToArray();
 
-        // Set tagline for prominent display (shows under title)
-        if (setTagline)
+        // Set tagline for prominent display (shows under title) - Movies only
+        if (setTagline && item is Movie movie)
         {
-            var contentWarning = "Content Warning: " + string.Join(", ", newTags.Select(t => t.Replace(prefix, "")));
-            item.Tagline = contentWarning;
+            var contentWarning = "⚠️ " + string.Join(", ", newTags.Select(t => t.Replace(prefix, "")));
+            movie.Tagline = contentWarning;
+        }
+
+        // For series, prepend to overview
+        if (setTagline && item is Series series)
+        {
+            var contentWarning = "⚠️ Content Warning: " + string.Join(", ", newTags.Select(t => t.Replace(prefix, "")));
+            if (series.Overview != null && !series.Overview.StartsWith("⚠️"))
+            {
+                series.Overview = contentWarning + "\n\n" + series.Overview;
+            }
+            else if (series.Overview == null)
+            {
+                series.Overview = contentWarning;
+            }
         }
 
         await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);

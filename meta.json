@@ -1,0 +1,17 @@
+{
+  "guid": "a5b6c7d8-e9f0-1234-5678-9abcdef01234",
+  "name": "Nudity Tagger",
+  "description": "Tags movies and TV shows with nudity/sexual content warnings from IMDB Parents Guide",
+  "overview": "Automatically scrapes IMDB Parents Guide and tags your library with content warnings like Brief Nudity, Full Nudity, Sexual Content, etc.",
+  "owner": "jyoung02",
+  "category": "Metadata",
+  "versions": [
+    {
+      "version": "1.1.1.0",
+      "changelog": "Fixed version display, added version to DLL filename, improved tagline/overview display",
+      "targetAbi": "10.9.0.0",
+      "sourceUrl": "https://github.com/jyoung02/Jellyfin.Plugin.NudityTagger/releases/download/v1.1.1/NudityTagger-v1.1.1.zip",
+      "timestamp": "2026-01-02T00:00:00Z"
+    }
+  ]
+}
