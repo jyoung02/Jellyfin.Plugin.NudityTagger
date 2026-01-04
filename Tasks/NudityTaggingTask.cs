@@ -330,6 +330,8 @@ public class NudityTaggingTask : IScheduledTask
             }
         }
 
+        // Save the item to repository - this persists tags to the database
+        // The tags should display after a library refresh or item reload in Jellyfin
         await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
         _logger.LogInformation("Applied tags {Tags} to {ItemName}", string.Join(", ", newTags), item.Name);
     }
