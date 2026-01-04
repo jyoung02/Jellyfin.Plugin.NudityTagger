@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using HtmlAgilityPack;
 using Jellyfin.Data.Enums;
+using Jellyfin.Plugin.NudityTagger.Configuration;
 using Jellyfin.Plugin.NudityTagger.Models;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
@@ -26,6 +27,9 @@ public class NudityTaggingTask : IScheduledTask
     private static readonly string[] SexualContentKeywords = { "sexual", "sex", "intercourse", "making love", "intimate", "moaning", "passion", "sensual", "erotic" };
     private static readonly string[] BriefNudityKeywords = { "brief", "quick", "fleeting", "glimpse", "blink", "moment", "background", "distant", "unclear" };
 
+    // IMDB ID format: "tt" followed by 7-8 digits
+    private static readonly Regex ImdbIdRegex = new(@"^tt\d{7,8}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public NudityTaggingTask(ILogger<NudityTaggingTask> logger, ILibraryManager libraryManager, IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
@@ -33,6 +37,8 @@ public class NudityTaggingTask : IScheduledTask
         _httpClient = httpClientFactory.CreateClient();
         _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
         _httpClient.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
+        // Set timeout to prevent resource exhaustion (30 seconds)
+        _httpClient.Timeout = TimeSpan.FromSeconds(30);
     }
 
     public string Name => "Tag Nudity Content";
@@ -60,6 +66,9 @@ public class NudityTaggingTask : IScheduledTask
             _logger.LogInformation("Nudity Tagger plugin is disabled, skipping task");
             return;
         }
+
+        // Validate and sanitize configuration values
+        config = ValidateAndSanitizeConfig(config);
 
         _logger.LogInformation("Starting Nudity Tagging Task");
 
@@ -142,6 +151,50 @@ public class NudityTaggingTask : IScheduledTask
         return _libraryManager.GetItemList(query);
     }
 
+    private PluginConfiguration ValidateAndSanitizeConfig(PluginConfiguration config)
+    {
+        // Validate CacheDurationHours (1 hour to 1 year)
+        if (config.CacheDurationHours < 1 || config.CacheDurationHours > 8760)
+        {
+            _logger.LogWarning("Invalid CacheDurationHours {Value}, clamping to valid range", config.CacheDurationHours);
+            config.CacheDurationHours = Math.Clamp(config.CacheDurationHours, 1, 8760);
+        }
+
+        // Validate RequestDelayMs (500ms to 60 seconds)
+        if (config.RequestDelayMs < 500 || config.RequestDelayMs > 60000)
+        {
+            _logger.LogWarning("Invalid RequestDelayMs {Value}, clamping to valid range", config.RequestDelayMs);
+            config.RequestDelayMs = Math.Clamp(config.RequestDelayMs, 500, 60000);
+        }
+
+        // Validate MinimumSeverityToTag
+        var validSeverities = new[] { "None", "Mild", "Moderate", "Severe" };
+        if (string.IsNullOrWhiteSpace(config.MinimumSeverityToTag) || 
+            !validSeverities.Contains(config.MinimumSeverityToTag, StringComparer.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning("Invalid MinimumSeverityToTag {Value}, defaulting to Mild", config.MinimumSeverityToTag);
+            config.MinimumSeverityToTag = "Mild";
+        }
+
+        // Sanitize TagPrefix - limit length and remove dangerous characters
+        if (config.TagPrefix != null)
+        {
+            const int maxPrefixLength = 50;
+            config.TagPrefix = config.TagPrefix.Trim();
+            if (config.TagPrefix.Length > maxPrefixLength)
+            {
+                _logger.LogWarning("TagPrefix too long, truncating to {MaxLength} characters", maxPrefixLength);
+                config.TagPrefix = config.TagPrefix.Substring(0, maxPrefixLength);
+            }
+        }
+        else
+        {
+            config.TagPrefix = string.Empty;
+        }
+
+        return config;
+    }
+
     private static string? GetImdbId(BaseItem item)
     {
         if (item.TryGetProviderId(MetadataProvider.Imdb, out var imdbId))
@@ -162,11 +215,50 @@ public class NudityTaggingTask : IScheduledTask
 
     private async Task<ParentsGuideData?> FetchParentsGuideAsync(string imdbId, string cachePath, int cacheDurationHours, CancellationToken ct)
     {
-        if (!imdbId.StartsWith("tt", StringComparison.OrdinalIgnoreCase))
-            imdbId = "tt" + imdbId;
+        // Validate and sanitize IMDB ID to prevent path traversal
+        if (string.IsNullOrWhiteSpace(imdbId))
+        {
+            _logger.LogWarning("Empty or null IMDB ID provided");
+            return null;
+        }
 
-        // Check cache
-        var cacheFile = Path.Combine(cachePath, $"{imdbId}.json");
+        // Normalize IMDB ID format
+        imdbId = imdbId.Trim();
+        if (!imdbId.StartsWith("tt", StringComparison.OrdinalIgnoreCase))
+        {
+            // Remove "tt" prefix if present and re-add, or add if missing
+            imdbId = imdbId.StartsWith("tt", StringComparison.OrdinalIgnoreCase) 
+                ? imdbId 
+                : "tt" + imdbId;
+        }
+
+        // Validate IMDB ID format (tt followed by 7-8 digits) to prevent injection
+        if (!ImdbIdRegex.IsMatch(imdbId))
+        {
+            _logger.LogWarning("Invalid IMDB ID format: {ImdbId}", imdbId);
+            return null;
+        }
+
+        // Sanitize filename - only allow alphanumeric characters and ensure it's safe
+        // IMDB IDs are already validated above, but double-check for path traversal
+        var sanitizedId = imdbId.Replace("..", "").Replace("/", "").Replace("\\", "");
+        if (sanitizedId != imdbId)
+        {
+            _logger.LogWarning("IMDB ID contained unsafe characters: {ImdbId}", imdbId);
+            return null;
+        }
+
+        // Check cache - use sanitized ID for file path
+        var cacheFile = Path.Combine(cachePath, $"{sanitizedId}.json");
+        
+        // Additional security: Ensure the resolved path is still within cachePath
+        var resolvedPath = Path.GetFullPath(cacheFile);
+        var resolvedCachePath = Path.GetFullPath(cachePath);
+        if (!resolvedPath.StartsWith(resolvedCachePath, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError("Path traversal detected! Cache file path outside cache directory: {Path}", resolvedPath);
+            return null;
+        }
         if (File.Exists(cacheFile))
         {
             try
@@ -176,18 +268,24 @@ public class NudityTaggingTask : IScheduledTask
                 if (cached != null && DateTime.UtcNow - cached.FetchedAt < TimeSpan.FromHours(cacheDurationHours))
                     return cached;
             }
-            catch { /* ignore cache errors */ }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error reading cache file for {ImdbId}", sanitizedId);
+                // Continue to fetch from web if cache read fails
+            }
         }
 
         try
         {
-            var url = $"https://www.imdb.com/title/{imdbId}/parentalguide";
-            var response = await _httpClient.GetAsync(url, ct);
+            // Use Uri constructor to properly encode the URL and prevent injection
+            var baseUri = new Uri("https://www.imdb.com/title/");
+            var fullUri = new Uri(baseUri, sanitizedId + "/parentalguide");
+            var response = await _httpClient.GetAsync(fullUri, ct);
             if (response.StatusCode == HttpStatusCode.NotFound) return null;
             response.EnsureSuccessStatusCode();
 
             var html = await response.Content.ReadAsStringAsync(ct);
-            var data = ParseParentsGuide(html, imdbId);
+            var data = ParseParentsGuide(html, sanitizedId);
 
             if (data != null)
             {
@@ -196,7 +294,11 @@ public class NudityTaggingTask : IScheduledTask
                     var json = JsonSerializer.Serialize(data);
                     await File.WriteAllTextAsync(cacheFile, json, ct);
                 }
-                catch { /* ignore cache write errors */ }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error writing cache file for {ImdbId}", sanitizedId);
+                    // Continue even if cache write fails
+                }
             }
 
             return data;
@@ -303,36 +405,53 @@ public class NudityTaggingTask : IScheduledTask
 
     private async Task ApplyTagsAsync(BaseItem item, List<string> newTags, string prefix, bool setTagline, CancellationToken ct)
     {
+        // Validate and sanitize tags - limit length to prevent DoS
+        const int maxTagLength = 100;
+        var sanitizedTags = newTags
+            .Where(t => !string.IsNullOrWhiteSpace(t) && t.Length <= maxTagLength)
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .ToList();
+
+        if (sanitizedTags.Count == 0)
+        {
+            _logger.LogWarning("No valid tags to apply for item {ItemName}", item.Name);
+            return;
+        }
+
         var currentTags = item.Tags?.ToList() ?? new List<string>();
         var allNudityTags = NudityCategory.AllCategories.Select(c => prefix + c).Concat(NudityCategory.AllCategories).ToHashSet();
         currentTags.RemoveAll(t => allNudityTags.Contains(t));
-        currentTags.AddRange(newTags);
+        currentTags.AddRange(sanitizedTags);
         item.Tags = currentTags.Distinct().ToArray();
 
         // Set tagline for prominent display (shows under title) - Movies only
         if (setTagline && item is Movie movie)
         {
-            var contentWarning = "⚠️ " + string.Join(", ", newTags.Select(t => t.Replace(prefix, "")));
-            movie.Tagline = contentWarning;
+            var contentWarning = "⚠️ " + string.Join(", ", sanitizedTags.Select(t => t.Replace(prefix, "")));
+            // Limit tagline length to prevent DoS
+            movie.Tagline = contentWarning.Length > 500 ? contentWarning.Substring(0, 497) + "..." : contentWarning;
         }
 
         // For series, prepend to overview
         if (setTagline && item is Series series)
         {
-            var contentWarning = "⚠️ Content Warning: " + string.Join(", ", newTags.Select(t => t.Replace(prefix, "")));
+            var contentWarning = "⚠️ Content Warning: " + string.Join(", ", sanitizedTags.Select(t => t.Replace(prefix, "")));
+            // Limit content warning length
+            var limitedWarning = contentWarning.Length > 200 ? contentWarning.Substring(0, 197) + "..." : contentWarning;
             if (series.Overview != null && !series.Overview.StartsWith("⚠️"))
             {
-                series.Overview = contentWarning + "\n\n" + series.Overview;
+                series.Overview = limitedWarning + "\n\n" + series.Overview;
             }
             else if (series.Overview == null)
             {
-                series.Overview = contentWarning;
+                series.Overview = limitedWarning;
             }
         }
 
         // Save the item to repository - this persists tags to the database
         // The tags should display after a library refresh or item reload in Jellyfin
         await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
-        _logger.LogInformation("Applied tags {Tags} to {ItemName}", string.Join(", ", newTags), item.Name);
+        _logger.LogInformation("Applied tags {Tags} to {ItemName}", string.Join(", ", sanitizedTags), item.Name);
     }
 }
