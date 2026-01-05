@@ -7,6 +7,13 @@
   "category": "Metadata",
   "versions": [
     {
+      "version": "1.1.3.0",
+      "changelog": "Performance improvements: Optimized keyword matching (~10x faster), retry logic for failed requests, automatic cache cleanup, enhanced HTML parsing with multiple fallback strategies, expanded keyword lists, and improved error handling",
+      "targetAbi": "10.9.0.0",
+      "sourceUrl": "https://github.com/jyoung02/Jellyfin.Plugin.NudityTagger/releases/download/v1.1.3/NudityTagger-v1.1.3.zip",
+      "timestamp": "2026-01-04T00:00:00Z"
+    },
+    {
       "version": "1.1.2.0",
       "changelog": "Security fixes: Path traversal protection, IMDB ID validation, URL encoding, HttpClient timeout, input validation, tag sanitization, and improved error handling",
       "targetAbi": "10.9.0.0",
