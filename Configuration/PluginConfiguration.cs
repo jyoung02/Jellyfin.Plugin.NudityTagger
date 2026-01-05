@@ -13,6 +13,8 @@ public class PluginConfiguration : BasePluginConfiguration
         RequestDelayMs = 2000;
         SkipAlreadyTagged = true;
         SetTagline = true;
+        MaxRetryAttempts = 3;
+        EnableCacheCleanup = true;
     }
 
     /// <summary>
@@ -50,4 +52,14 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets a value indicating whether to set the tagline with content warnings.
     /// </summary>
     public bool SetTagline { get; set; }
+
+    /// <summary>
+    /// Gets or sets the number of retry attempts for failed HTTP requests.
+    /// </summary>
+    public int MaxRetryAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// Gets or sets whether to clean up old cache files automatically.
+    /// </summary>
+    public bool EnableCacheCleanup { get; set; } = true;
 }

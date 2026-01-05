@@ -21,11 +21,30 @@ public class NudityTaggingTask : IScheduledTask
     private readonly ILibraryManager _libraryManager;
     private readonly HttpClient _httpClient;
 
-    // Keywords for categorizing content
-    private static readonly string[] FullNudityKeywords = { "full frontal", "fully nude", "completely nude", "full nudity", "genitalia", "genital", "penis", "vagina", "pubic" };
-    private static readonly string[] GraphicSexualKeywords = { "graphic sex", "explicit sex", "sex scene", "sexual intercourse", "thrusting", "orgasm", "ejaculation", "masturbation" };
-    private static readonly string[] SexualContentKeywords = { "sexual", "sex", "intercourse", "making love", "intimate", "moaning", "passion", "sensual", "erotic" };
-    private static readonly string[] BriefNudityKeywords = { "brief", "quick", "fleeting", "glimpse", "blink", "moment", "background", "distant", "unclear" };
+    // Keywords for categorizing content - using HashSet for O(1) lookup performance
+    private static readonly HashSet<string> FullNudityKeywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "full frontal", "fully nude", "completely nude", "full nudity", "genitalia", "genital", "penis", "vagina", "pubic",
+        "naked", "nude", "nudity", "bare", "exposed", "topless", "bottomless"
+    };
+    
+    private static readonly HashSet<string> GraphicSexualKeywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "graphic sex", "explicit sex", "sex scene", "sexual intercourse", "thrusting", "orgasm", "ejaculation", "masturbation",
+        "pornographic", "hardcore", "explicit", "simulated sex", "sex act"
+    };
+    
+    private static readonly HashSet<string> SexualContentKeywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "sexual", "sex", "intercourse", "making love", "intimate", "moaning", "passion", "sensual", "erotic",
+        "seduction", "foreplay", "kissing", "caressing", "undressing", "bedroom", "romance"
+    };
+    
+    private static readonly HashSet<string> BriefNudityKeywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "brief", "quick", "fleeting", "glimpse", "blink", "moment", "background", "distant", "unclear",
+        "partial", "suggested", "implied", "shadow", "silhouette"
+    };
 
     // IMDB ID format: "tt" followed by 7-8 digits
     private static readonly Regex ImdbIdRegex = new(@"^tt\d{7,8}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -76,7 +95,15 @@ public class NudityTaggingTask : IScheduledTask
         var processedImdbIds = new HashSet<string>();
         var cachePath = Plugin.Instance?.GetCachePath() ?? Path.GetTempPath();
 
+        // Clean up old cache files if enabled
+        if (config.EnableCacheCleanup)
+        {
+            CleanupOldCacheFiles(cachePath, config.CacheDurationHours);
+        }
+
         int total = items.Count, processed = 0, tagged = 0, skipped = 0, failed = 0;
+        
+        _logger.LogInformation("Found {Count} items to process", total);
 
         foreach (var item in items)
         {
@@ -106,7 +133,7 @@ public class NudityTaggingTask : IScheduledTask
                     continue;
                 }
 
-                var parentsGuide = await FetchParentsGuideAsync(imdbId, cachePath, config.CacheDurationHours, cancellationToken);
+                var parentsGuide = await FetchParentsGuideAsync(imdbId, cachePath, config.CacheDurationHours, config.MaxRetryAttempts, cancellationToken);
                 if (parentsGuide == null)
                 {
                     _logger.LogWarning("Could not fetch Parents Guide for: {Name} ({ImdbId})", item.Name, imdbId);
@@ -167,6 +194,13 @@ public class NudityTaggingTask : IScheduledTask
             config.RequestDelayMs = Math.Clamp(config.RequestDelayMs, 500, 60000);
         }
 
+        // Validate MaxRetryAttempts (1 to 10)
+        if (config.MaxRetryAttempts < 1 || config.MaxRetryAttempts > 10)
+        {
+            _logger.LogWarning("Invalid MaxRetryAttempts {Value}, clamping to valid range", config.MaxRetryAttempts);
+            config.MaxRetryAttempts = Math.Clamp(config.MaxRetryAttempts, 1, 10);
+        }
+
         // Validate MinimumSeverityToTag
         var validSeverities = new[] { "None", "Mild", "Moderate", "Severe" };
         if (string.IsNullOrWhiteSpace(config.MinimumSeverityToTag) || 
@@ -213,7 +247,45 @@ public class NudityTaggingTask : IScheduledTask
         return item.Tags.Any(t => allTags.Contains(t));
     }
 
-    private async Task<ParentsGuideData?> FetchParentsGuideAsync(string imdbId, string cachePath, int cacheDurationHours, CancellationToken ct)
+    private void CleanupOldCacheFiles(string cachePath, int cacheDurationHours)
+    {
+        try
+        {
+            if (!Directory.Exists(cachePath)) return;
+
+            var cutoffTime = DateTime.UtcNow.AddHours(-cacheDurationHours * 2); // Clean files older than 2x cache duration
+            var files = Directory.GetFiles(cachePath, "*.json");
+            var deletedCount = 0;
+
+            foreach (var file in files)
+            {
+                try
+                {
+                    var fileInfo = new FileInfo(file);
+                    if (fileInfo.LastWriteTimeUtc < cutoffTime)
+                    {
+                        File.Delete(file);
+                        deletedCount++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error deleting old cache file: {File}", file);
+                }
+            }
+
+            if (deletedCount > 0)
+            {
+                _logger.LogInformation("Cleaned up {Count} old cache files", deletedCount);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error during cache cleanup");
+        }
+    }
+
+    private async Task<ParentsGuideData?> FetchParentsGuideAsync(string imdbId, string cachePath, int cacheDurationHours, int maxRetries, CancellationToken ct)
     {
         // Validate and sanitize IMDB ID to prevent path traversal
         if (string.IsNullOrWhiteSpace(imdbId))
@@ -275,39 +347,71 @@ public class NudityTaggingTask : IScheduledTask
             }
         }
 
-        try
+        // Retry logic for HTTP requests
+        Exception? lastException = null;
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            // Use Uri constructor to properly encode the URL and prevent injection
-            var baseUri = new Uri("https://www.imdb.com/title/");
-            var fullUri = new Uri(baseUri, sanitizedId + "/parentalguide");
-            var response = await _httpClient.GetAsync(fullUri, ct);
-            if (response.StatusCode == HttpStatusCode.NotFound) return null;
-            response.EnsureSuccessStatusCode();
-
-            var html = await response.Content.ReadAsStringAsync(ct);
-            var data = ParseParentsGuide(html, sanitizedId);
-
-            if (data != null)
+            try
             {
-                try
+                // Use Uri constructor to properly encode the URL and prevent injection
+                var baseUri = new Uri("https://www.imdb.com/title/");
+                var fullUri = new Uri(baseUri, sanitizedId + "/parentalguide");
+                
+                if (attempt > 1)
                 {
-                    var json = JsonSerializer.Serialize(data);
-                    await File.WriteAllTextAsync(cacheFile, json, ct);
+                    _logger.LogInformation("Retry attempt {Attempt}/{MaxRetries} for {ImdbId}", attempt, maxRetries, sanitizedId);
+                    await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct); // Exponential backoff
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Error writing cache file for {ImdbId}", sanitizedId);
-                    // Continue even if cache write fails
-                }
-            }
 
-            return data;
+                var response = await _httpClient.GetAsync(fullUri, ct);
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _logger.LogWarning("Parents Guide not found for {ImdbId}", sanitizedId);
+                    return null;
+                }
+                
+                response.EnsureSuccessStatusCode();
+
+                var html = await response.Content.ReadAsStringAsync(ct);
+                var data = ParseParentsGuide(html, sanitizedId);
+
+                if (data != null)
+                {
+                    try
+                    {
+                        var json = JsonSerializer.Serialize(data);
+                        await File.WriteAllTextAsync(cacheFile, json, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error writing cache file for {ImdbId}", sanitizedId);
+                        // Continue even if cache write fails
+                    }
+                }
+
+                return data;
+            }
+            catch (HttpRequestException ex) when (attempt < maxRetries)
+            {
+                lastException = ex;
+                _logger.LogWarning(ex, "HTTP request failed for {ImdbId} (attempt {Attempt}/{MaxRetries})", sanitizedId, attempt, maxRetries);
+                // Continue to retry
+            }
+            catch (TaskCanceledException ex) when (attempt < maxRetries)
+            {
+                lastException = ex;
+                _logger.LogWarning(ex, "Request timeout for {ImdbId} (attempt {Attempt}/{MaxRetries})", sanitizedId, attempt, maxRetries);
+                // Continue to retry
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching Parents Guide for {ImdbId}", sanitizedId);
+                return null;
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching Parents Guide for {ImdbId}", imdbId);
-            return null;
-        }
+
+        _logger.LogError(lastException, "Failed to fetch Parents Guide for {ImdbId} after {MaxRetries} attempts", sanitizedId, maxRetries);
+        return null;
     }
 
     private ParentsGuideData ParseParentsGuide(string html, string imdbId)
@@ -317,42 +421,120 @@ public class NudityTaggingTask : IScheduledTask
 
         var data = new ParentsGuideData { ImdbId = imdbId, FetchedAt = DateTime.UtcNow };
 
-        // Find Sex & Nudity section
-        var nuditySection = doc.DocumentNode.SelectSingleNode("//section[@id='advisory-nudity']")
-            ?? doc.DocumentNode.SelectSingleNode("//*[contains(@id, 'nudity')]");
+        // Multiple strategies to find Sex & Nudity section (IMDB HTML structure can vary)
+        HtmlNode? nuditySection = null;
 
+        // Strategy 1: Look for section with id="advisory-nudity"
+        nuditySection = doc.DocumentNode.SelectSingleNode("//section[@id='advisory-nudity']");
+
+        // Strategy 2: Look for any element with "nudity" in the id
         if (nuditySection == null)
         {
-            var sections = doc.DocumentNode.SelectNodes("//section");
-            nuditySection = sections?.FirstOrDefault(s =>
-                s.SelectSingleNode(".//h3 | .//h2")?.InnerText?.Contains("Sex", StringComparison.OrdinalIgnoreCase) == true);
+            nuditySection = doc.DocumentNode.SelectNodes("//section | //div")
+                ?.FirstOrDefault(s => s.GetAttributeValue("id", "").Contains("nudity", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Strategy 3: Look for section/div with heading containing "Sex" or "Nudity"
+        if (nuditySection == null)
+        {
+            var allSections = doc.DocumentNode.SelectNodes("//section | //div[@class*='advisory'] | //div[@class*='parental']");
+            if (allSections != null)
+            {
+                foreach (var section in allSections)
+                {
+                    var heading = section.SelectSingleNode(".//h2 | .//h3 | .//h4 | .//span[@class*='heading'] | .//div[@class*='heading']");
+                    if (heading != null)
+                    {
+                        var headingText = heading.InnerText?.ToLowerInvariant() ?? "";
+                        if (headingText.Contains("sex", StringComparison.OrdinalIgnoreCase) ||
+                            headingText.Contains("nudity", StringComparison.OrdinalIgnoreCase))
+                        {
+                            nuditySection = section;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 4: Look for text content containing "Sex & Nudity" or similar
+        if (nuditySection == null)
+        {
+            var nodesWithText = doc.DocumentNode.SelectNodes("//*[contains(text(), 'Sex & Nudity') or contains(text(), 'Sex and Nudity')]");
+            if (nodesWithText != null && nodesWithText.Count > 0)
+            {
+                // Find the parent section/div
+                var parent = nodesWithText[0].ParentNode;
+                while (parent != null && parent.Name != "section" && parent.Name != "div")
+                {
+                    parent = parent.ParentNode;
+                }
+                nuditySection = parent;
+            }
         }
 
         if (nuditySection != null)
         {
-            // Extract severity
-            var severityNode = nuditySection.SelectSingleNode(".//*[contains(text(), 'Mild') or contains(text(), 'Moderate') or contains(text(), 'Severe') or contains(text(), 'None')]");
-            if (severityNode != null)
+            // Extract severity with multiple strategies
+            var severityText = "";
+            
+            // Look for severity indicators in various formats
+            var severityNodes = nuditySection.SelectNodes(".//*[contains(@class, 'severity')] | .//*[contains(@class, 'rating')] | .//span | .//div");
+            if (severityNodes != null)
             {
-                var text = severityNode.InnerText.ToLowerInvariant();
-                data.Severity = text.Contains("severe") ? SeverityLevel.Severe
-                    : text.Contains("moderate") ? SeverityLevel.Moderate
-                    : text.Contains("mild") ? SeverityLevel.Mild
-                    : text.Contains("none") ? SeverityLevel.None
+                foreach (var node in severityNodes)
+                {
+                    var text = node.InnerText?.ToLowerInvariant() ?? "";
+                    if (text.Contains("severe") || text.Contains("moderate") || text.Contains("mild") || text.Contains("none"))
+                    {
+                        severityText = text;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback: search all text in section
+            if (string.IsNullOrEmpty(severityText))
+            {
+                var allText = nuditySection.InnerText?.ToLowerInvariant() ?? "";
+                if (allText.Contains("severe")) severityText = "severe";
+                else if (allText.Contains("moderate")) severityText = "moderate";
+                else if (allText.Contains("mild")) severityText = "mild";
+                else if (allText.Contains("none")) severityText = "none";
+            }
+
+            // Parse severity
+            if (!string.IsNullOrEmpty(severityText))
+            {
+                data.Severity = severityText.Contains("severe") ? SeverityLevel.Severe
+                    : severityText.Contains("moderate") ? SeverityLevel.Moderate
+                    : severityText.Contains("mild") ? SeverityLevel.Mild
+                    : severityText.Contains("none") ? SeverityLevel.None
                     : SeverityLevel.Unknown;
             }
 
-            // Extract descriptions
-            var listItems = nuditySection.SelectNodes(".//li");
+            // Extract descriptions with better filtering
+            var listItems = nuditySection.SelectNodes(".//li | .//p | .//div[@class*='item']");
             if (listItems != null)
             {
-                foreach (var li in listItems)
+                foreach (var item in listItems)
                 {
-                    var text = HtmlEntity.DeEntitize(li.InnerText).Trim();
-                    if (text.Length > 10 && !text.StartsWith("Edit"))
+                    var text = HtmlEntity.DeEntitize(item.InnerText ?? "").Trim();
+                    // Filter out short text, edit links, and navigation elements
+                    if (text.Length > 15 && 
+                        !text.StartsWith("Edit", StringComparison.OrdinalIgnoreCase) &&
+                        !text.StartsWith("Add", StringComparison.OrdinalIgnoreCase) &&
+                        !text.Contains("See more", StringComparison.OrdinalIgnoreCase) &&
+                        !text.Contains("See less", StringComparison.OrdinalIgnoreCase))
+                    {
                         data.Descriptions.Add(text);
+                    }
                 }
             }
+        }
+        else
+        {
+            _logger.LogWarning("Could not find Sex & Nudity section in HTML for {ImdbId}", imdbId);
         }
 
         return data;
@@ -376,11 +558,16 @@ public class NudityTaggingTask : IScheduledTask
             return tags;
         }
 
+        // Optimized keyword matching: check full text for phrases, then use HashSet for single words
         var allDesc = string.Join(" ", data.Descriptions).ToLowerInvariant();
-        bool hasFullNudity = FullNudityKeywords.Any(k => allDesc.Contains(k));
-        bool hasGraphicSex = GraphicSexualKeywords.Any(k => allDesc.Contains(k));
-        bool hasSexContent = SexualContentKeywords.Any(k => allDesc.Contains(k));
-        bool isBrief = BriefNudityKeywords.Any(k => allDesc.Contains(k));
+        var descWords = new HashSet<string>(allDesc.Split(new[] { ' ', '\n', '\r', '\t', '.', ',', '!', '?', ';', ':' }, 
+            StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+        
+        // Check for multi-word phrases in full text, then single words using HashSet
+        bool hasFullNudity = FullNudityKeywords.Any(k => k.Contains(' ') ? allDesc.Contains(k, StringComparison.OrdinalIgnoreCase) : descWords.Contains(k));
+        bool hasGraphicSex = GraphicSexualKeywords.Any(k => k.Contains(' ') ? allDesc.Contains(k, StringComparison.OrdinalIgnoreCase) : descWords.Contains(k));
+        bool hasSexContent = SexualContentKeywords.Any(k => k.Contains(' ') ? allDesc.Contains(k, StringComparison.OrdinalIgnoreCase) : descWords.Contains(k));
+        bool isBrief = BriefNudityKeywords.Any(k => k.Contains(' ') ? allDesc.Contains(k, StringComparison.OrdinalIgnoreCase) : descWords.Contains(k));
 
         switch (data.Severity)
         {

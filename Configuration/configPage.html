@@ -45,8 +45,22 @@
 
                         <div class="inputContainer">
                             <label class="inputLabel inputLabelUnfocused" for="RequestDelayMs">Request Delay (ms)</label>
-                            <input id="RequestDelayMs" type="number" is="emby-input" min="500" max="10000" />
-                            <div class="fieldDescription">Delay between IMDB requests to avoid rate limiting.</div>
+                            <input id="RequestDelayMs" type="number" is="emby-input" min="500" max="60000" />
+                            <div class="fieldDescription">Delay between IMDB requests to avoid rate limiting (500-60000ms).</div>
+                        </div>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="MaxRetryAttempts">Max Retry Attempts</label>
+                            <input id="MaxRetryAttempts" type="number" is="emby-input" min="1" max="10" />
+                            <div class="fieldDescription">Number of retry attempts for failed HTTP requests (1-10).</div>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="EnableCacheCleanup" type="checkbox" is="emby-checkbox" />
+                                <span>Enable Cache Cleanup</span>
+                            </label>
+                            <div class="fieldDescription">Automatically clean up old cache files to save disk space.</div>
                         </div>
 
                         <div class="checkboxContainer checkboxContainer-withDescription">
@@ -89,6 +103,8 @@
                         document.querySelector('#TagPrefix').value = config.TagPrefix;
                         document.querySelector('#CacheDurationHours').value = config.CacheDurationHours;
                         document.querySelector('#RequestDelayMs').value = config.RequestDelayMs;
+                        document.querySelector('#MaxRetryAttempts').value = config.MaxRetryAttempts || 3;
+                        document.querySelector('#EnableCacheCleanup').checked = config.EnableCacheCleanup !== false;
                         document.querySelector('#SkipAlreadyTagged').checked = config.SkipAlreadyTagged;
                         document.querySelector('#SetTagline').checked = config.SetTagline;
                         Dashboard.hideLoadingMsg();
@@ -105,6 +121,8 @@
                         config.TagPrefix = document.querySelector('#TagPrefix').value;
                         config.CacheDurationHours = parseInt(document.querySelector('#CacheDurationHours').value, 10);
                         config.RequestDelayMs = parseInt(document.querySelector('#RequestDelayMs').value, 10);
+                        config.MaxRetryAttempts = parseInt(document.querySelector('#MaxRetryAttempts').value, 10) || 3;
+                        config.EnableCacheCleanup = document.querySelector('#EnableCacheCleanup').checked;
                         config.SkipAlreadyTagged = document.querySelector('#SkipAlreadyTagged').checked;
                         config.SetTagline = document.querySelector('#SetTagline').checked;
                         ApiClient.updatePluginConfiguration(NudityTaggerConfig.pluginUniqueId, config).then(function(result) {
