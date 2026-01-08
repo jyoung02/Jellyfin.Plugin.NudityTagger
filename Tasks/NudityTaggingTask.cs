@@ -22,10 +22,11 @@ public class NudityTaggingTask : IScheduledTask
     private readonly HttpClient _httpClient;
 
     // Keywords for categorizing content - using HashSet for O(1) lookup performance
+    // Note: FullNudityKeywords should be specific to full/explicit nudity, not generic terms
     private static readonly HashSet<string> FullNudityKeywords = new(StringComparer.OrdinalIgnoreCase)
     {
-        "full frontal", "fully nude", "completely nude", "full nudity", "genitalia", "genital", "penis", "vagina", "pubic",
-        "naked", "nude", "nudity", "bare", "exposed", "topless", "bottomless"
+        "full frontal", "fully nude", "completely nude", "full nudity", "genitalia", "genital",
+        "penis", "vagina", "pubic", "bottomless", "fully naked", "completely naked"
     };
     
     private static readonly HashSet<string> GraphicSexualKeywords = new(StringComparer.OrdinalIgnoreCase)
@@ -44,6 +45,12 @@ public class NudityTaggingTask : IScheduledTask
     {
         "brief", "quick", "fleeting", "glimpse", "blink", "moment", "background", "distant", "unclear",
         "partial", "suggested", "implied", "shadow", "silhouette"
+    };
+
+    // General nudity terms (used for partial nudity detection when not full nudity)
+    private static readonly HashSet<string> GeneralNudityKeywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "nude", "naked", "nudity", "bare", "exposed", "topless", "shirtless", "undressed"
     };
 
     // IMDB ID format: "tt" followed by 7-8 digits
@@ -133,11 +140,16 @@ public class NudityTaggingTask : IScheduledTask
                     continue;
                 }
 
-                var parentsGuide = await FetchParentsGuideAsync(imdbId, cachePath, config.CacheDurationHours, config.MaxRetryAttempts, cancellationToken);
+                var (parentsGuide, madeHttpRequest) = await FetchParentsGuideAsync(imdbId, cachePath, config.CacheDurationHours, config.MaxRetryAttempts, cancellationToken);
                 if (parentsGuide == null)
                 {
                     _logger.LogWarning("Could not fetch Parents Guide for: {Name} ({ImdbId})", item.Name, imdbId);
                     failed++;
+                    // Only delay if we made an HTTP request (not on validation failures)
+                    if (madeHttpRequest)
+                    {
+                        await Task.Delay(config.RequestDelayMs, cancellationToken);
+                    }
                     continue;
                 }
 
@@ -153,7 +165,11 @@ public class NudityTaggingTask : IScheduledTask
                     skipped++;
                 }
 
-                await Task.Delay(config.RequestDelayMs, cancellationToken);
+                // Only delay after HTTP requests, not cache hits
+                if (madeHttpRequest)
+                {
+                    await Task.Delay(config.RequestDelayMs, cancellationToken);
+                }
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -285,30 +301,27 @@ public class NudityTaggingTask : IScheduledTask
         }
     }
 
-    private async Task<ParentsGuideData?> FetchParentsGuideAsync(string imdbId, string cachePath, int cacheDurationHours, int maxRetries, CancellationToken ct)
+    private async Task<(ParentsGuideData? Data, bool MadeHttpRequest)> FetchParentsGuideAsync(string imdbId, string cachePath, int cacheDurationHours, int maxRetries, CancellationToken ct)
     {
         // Validate and sanitize IMDB ID to prevent path traversal
         if (string.IsNullOrWhiteSpace(imdbId))
         {
             _logger.LogWarning("Empty or null IMDB ID provided");
-            return null;
+            return (null, false);
         }
 
         // Normalize IMDB ID format
         imdbId = imdbId.Trim();
         if (!imdbId.StartsWith("tt", StringComparison.OrdinalIgnoreCase))
         {
-            // Remove "tt" prefix if present and re-add, or add if missing
-            imdbId = imdbId.StartsWith("tt", StringComparison.OrdinalIgnoreCase) 
-                ? imdbId 
-                : "tt" + imdbId;
+            imdbId = "tt" + imdbId;
         }
 
         // Validate IMDB ID format (tt followed by 7-8 digits) to prevent injection
         if (!ImdbIdRegex.IsMatch(imdbId))
         {
             _logger.LogWarning("Invalid IMDB ID format: {ImdbId}", imdbId);
-            return null;
+            return (null, false);
         }
 
         // Sanitize filename - only allow alphanumeric characters and ensure it's safe
@@ -317,7 +330,7 @@ public class NudityTaggingTask : IScheduledTask
         if (sanitizedId != imdbId)
         {
             _logger.LogWarning("IMDB ID contained unsafe characters: {ImdbId}", imdbId);
-            return null;
+            return (null, false);
         }
 
         // Check cache - use sanitized ID for file path
@@ -326,10 +339,15 @@ public class NudityTaggingTask : IScheduledTask
         // Additional security: Ensure the resolved path is still within cachePath
         var resolvedPath = Path.GetFullPath(cacheFile);
         var resolvedCachePath = Path.GetFullPath(cachePath);
+        // Append directory separator to prevent matching C:\cacheEVIL when cachePath is C:\cache
+        if (!resolvedCachePath.EndsWith(Path.DirectorySeparatorChar))
+        {
+            resolvedCachePath += Path.DirectorySeparatorChar;
+        }
         if (!resolvedPath.StartsWith(resolvedCachePath, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogError("Path traversal detected! Cache file path outside cache directory: {Path}", resolvedPath);
-            return null;
+            return (null, false);
         }
         if (File.Exists(cacheFile))
         {
@@ -338,7 +356,7 @@ public class NudityTaggingTask : IScheduledTask
                 var json = await File.ReadAllTextAsync(cacheFile, ct);
                 var cached = JsonSerializer.Deserialize<ParentsGuideData>(json);
                 if (cached != null && DateTime.UtcNow - cached.FetchedAt < TimeSpan.FromHours(cacheDurationHours))
-                    return cached;
+                    return (cached, false); // Cache hit - no HTTP request made
             }
             catch (Exception ex)
             {
@@ -367,7 +385,7 @@ public class NudityTaggingTask : IScheduledTask
                 if (response.StatusCode == HttpStatusCode.NotFound)
                 {
                     _logger.LogWarning("Parents Guide not found for {ImdbId}", sanitizedId);
-                    return null;
+                    return (null, true); // HTTP request was made
                 }
                 
                 response.EnsureSuccessStatusCode();
@@ -389,7 +407,7 @@ public class NudityTaggingTask : IScheduledTask
                     }
                 }
 
-                return data;
+                return (data, true); // HTTP request was made
             }
             catch (HttpRequestException ex) when (attempt < maxRetries)
             {
@@ -406,12 +424,12 @@ public class NudityTaggingTask : IScheduledTask
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching Parents Guide for {ImdbId}", sanitizedId);
-                return null;
+                return (null, true); // HTTP request was attempted
             }
         }
 
         _logger.LogError(lastException, "Failed to fetch Parents Guide for {ImdbId} after {MaxRetries} attempts", sanitizedId, maxRetries);
-        return null;
+        return (null, true); // HTTP requests were made
     }
 
     private ParentsGuideData ParseParentsGuide(string html, string imdbId)
@@ -445,7 +463,7 @@ public class NudityTaggingTask : IScheduledTask
                     var heading = section.SelectSingleNode(".//h2 | .//h3 | .//h4 | .//span[@class*='heading'] | .//div[@class*='heading']");
                     if (heading != null)
                     {
-                        var headingText = heading.InnerText?.ToLowerInvariant() ?? "";
+                        var headingText = heading.InnerText ?? "";
                         if (headingText.Contains("sex", StringComparison.OrdinalIgnoreCase) ||
                             headingText.Contains("nudity", StringComparison.OrdinalIgnoreCase))
                         {

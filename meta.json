@@ -7,6 +7,13 @@
   "category": "Metadata",
   "versions": [
     {
+      "version": "1.1.4.0",
+      "changelog": "Bug fixes: Fixed path traversal edge case, optimized delay to skip cache hits, fixed overly broad keyword matching, removed redundant code",
+      "targetAbi": "10.9.0.0",
+      "sourceUrl": "https://github.com/jyoung02/Jellyfin.Plugin.NudityTagger/releases/download/v1.1.4/NudityTagger-v1.1.4.zip",
+      "timestamp": "2026-01-08T00:00:00Z"
+    },
+    {
       "version": "1.1.3.0",
       "changelog": "Performance improvements: Optimized keyword matching (~10x faster), retry logic for failed requests, automatic cache cleanup, enhanced HTML parsing with multiple fallback strategies, expanded keyword lists, and improved error handling",
       "targetAbi": "10.9.0.0",
